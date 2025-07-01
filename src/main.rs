@@ -10,9 +10,8 @@ use futures::stream::StreamExt;
 use moka::future::Cache;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::{fmt, sync::Arc};
+use std::fmt;
 use tokio::fs;
-use tower_http::cors::{Any, CorsLayer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Hash)]
@@ -60,9 +59,7 @@ struct EnergyParams {
     interval: Option<Interval>,
 }
 
-// --- UPDATE: Logica gecentraliseerd op de EnergyParams struct ---
 impl EnergyParams {
-    /// Creëert een unieke string voor gebruik als cache key.
     fn get_cache_key(&self) -> String {
         let interval = self.interval.unwrap_or(Interval::Hour);
         format!(
@@ -74,20 +71,18 @@ impl EnergyParams {
         )
     }
 
-    /// Bouwt de volledige URL voor de externe ANWB API.
     fn build_api_url(&self) -> String {
         let interval = self.interval.unwrap_or(Interval::Hour);
         format!(
-            "https://api.anwb.nl/energy/energy-services/v1/tarieven/{}?startDate={}&endDate={}&interval={}",
-            self.energy_type,
-            self.start_date.to_rfc3339_opts(SecondsFormat::Millis, true),
-            self.end_date.to_rfc3339_opts(SecondsFormat::Millis, true),
-            interval
-        )
+"https://api.anwb.nl/energy/energy-services/v1/tarieven/{}?startDate={}&endDate={}&interval={}",
+self.energy_type,
+self.start_date.to_rfc3339_opts(SecondsFormat::Millis, true),
+self.end_date.to_rfc3339_opts(SecondsFormat::Millis, true),
+interval
+)
     }
 }
 
-/// Implementeert de Display trait voor nette logging.
 impl fmt::Display for EnergyParams {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -106,8 +101,37 @@ type EnergyData = serde_json::Value;
 #[derive(Clone)]
 struct AppState {
     http_client: Client,
-    cache: Arc<Cache<String, EnergyData>>,
-    static_file_path: Arc<String>,
+    cache: Cache<String, EnergyData>,
+    static_file_path: String,
+}
+
+#[derive(Debug)]
+struct AppConfig {
+    listen_addr: String,
+    cache_ttl_seconds: u64,
+    static_file_path: String,
+    cache_warmup_concurrency: usize,
+}
+
+fn load_config() -> AppConfig {
+    let listen_addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
+    let cache_ttl_seconds: u64 = std::env::var("CACHE_TTL_SECONDS")
+        .unwrap_or_else(|_| "3600".to_string())
+        .parse()
+        .expect("CACHE_TTL_SECONDS moet een geldig getal zijn.");
+    let static_file_path =
+        std::env::var("STATIC_FILE_PATH").unwrap_or_else(|_| "index.html".to_string());
+    let cache_warmup_concurrency: usize = std::env::var("CACHE_WARMUP_CONCURRENCY")
+        .unwrap_or_else(|_| "10".to_string())
+        .parse()
+        .expect("CACHE_WARMUP_CONCURRENCY moet een geldig getal zijn.");
+
+    AppConfig {
+        listen_addr,
+        cache_ttl_seconds,
+        static_file_path,
+        cache_warmup_concurrency,
+    }
 }
 
 #[tokio::main]
@@ -120,48 +144,33 @@ async fn main() {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    let listen_addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
-    let cache_ttl_seconds: u64 = std::env::var("CACHE_TTL_SECONDS")
-        .unwrap_or_else(|_| "3600".to_string())
-        .parse()
-        .expect("CACHE_TTL_SECONDS moet een geldig getal zijn.");
-    let static_file_path =
-        std::env::var("STATIC_FILE_PATH").unwrap_or_else(|_| "index.html".to_string());
+    let config = load_config();
+    tracing::info!("Configuratie geladen: {:?}", config);
 
-    tracing::info!(
-        "Configuratie geladen: Adres={}, Cache TTL={}s, HTML-pad='{}'",
-        listen_addr,
-        cache_ttl_seconds,
-        &static_file_path
-    );
-
-    let cache = Arc::new(
-        Cache::builder()
-            .max_capacity(1_000)
-            .time_to_live(std::time::Duration::from_secs(cache_ttl_seconds))
-            .build(),
-    );
+    let cache = Cache::builder()
+        .max_capacity(1_000)
+        .time_to_live(std::time::Duration::from_secs(config.cache_ttl_seconds))
+        .build();
 
     let app_state = AppState {
         http_client: Client::new(),
-        cache: cache.clone(),
-        static_file_path: Arc::new(static_file_path),
+        cache,
+        static_file_path: config.static_file_path,
     };
 
-    tokio::spawn(warm_up_cache(app_state.clone()));
-
-    let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
-        .allow_headers(Any);
+    tokio::spawn(warm_up_cache(
+        app_state.clone(),
+        config.cache_warmup_concurrency,
+    ));
 
     let app = Router::new()
         .route("/", get(serve_frontend))
         .route("/api/energy", get(get_energy_data))
-        .with_state(app_state)
-        .layer(cors);
+        .with_state(app_state);
 
-    let listener = tokio::net::TcpListener::bind(&listen_addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&config.listen_addr)
+        .await
+        .unwrap();
     tracing::info!("Server luistert op {}", listener.local_addr().unwrap());
     axum::serve(listener, app).await.unwrap();
 }
@@ -169,9 +178,9 @@ async fn main() {
 async fn serve_frontend(State(state): State<AppState>) -> impl IntoResponse {
     tracing::info!(
         "Frontend request ontvangen, lezen van '{}'",
-        &*state.static_file_path
+        &state.static_file_path
     );
-    match fs::read_to_string(&*state.static_file_path).await {
+    match fs::read_to_string(&state.static_file_path).await {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
             tracing::error!("Kon HTML-bestand niet lezen: {}", e);
@@ -184,15 +193,12 @@ async fn serve_frontend(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-/// De handler gebruikt nu de nieuwe methodes op `EnergyParams`.
 async fn get_energy_data(
     State(state): State<AppState>,
     Query(params): Query<EnergyParams>,
 ) -> impl IntoResponse {
-    // --- UPDATE: Logging via de Display trait ---
     tracing::info!("Energie-API request: {}", params);
 
-    // --- UPDATE: Cache key via de nieuwe methode ---
     let cache_key = params.get_cache_key();
 
     if let Some(cached_data) = state.cache.get(&cache_key).await {
@@ -208,12 +214,10 @@ async fn get_energy_data(
     }
 }
 
-/// De fetch-functie is nu schoner en gebruikt de methodes op `params`.
 async fn fetch_and_cache(
     state: &AppState,
     params: &EnergyParams,
 ) -> Result<EnergyData, (StatusCode, String)> {
-    // --- UPDATE: URL en cache key via de nieuwe methodes ---
     let anwb_api_url = params.build_api_url();
     let cache_key = params.get_cache_key();
 
@@ -251,13 +255,7 @@ async fn fetch_and_cache(
     }
 }
 
-/// De cache warmer is nu parallel en gebruikt het correcte datumformaat.
-async fn warm_up_cache(state: AppState) {
-    let concurrency: usize = std::env::var("CACHE_WARMUP_CONCURRENCY")
-        .unwrap_or_else(|_| "10".to_string())
-        .parse()
-        .expect("CACHE_WARMUP_CONCURRENCY moet een geldig getal zijn.");
-
+async fn warm_up_cache(state: AppState, concurrency: usize) {
     tracing::info!(
         "Starten met het opwarmen van de cache (concurrency: {})...",
         concurrency
