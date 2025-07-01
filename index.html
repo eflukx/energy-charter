@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Energieprijs Grafiek</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/litepicker/dist/litepicker.js"></script>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f7ff;
+        }
+        .card {
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.05), 0 4px 6px -4px rgb(0 0 0 / 0.05);
+            border: 1px solid #e9d5ff;
+        }
+        .btn-toggle.active {
+            background-color: #7c3aed;
+            color: white;
+        }
+        .btn-toggle.inactive {
+            background-color: #f5f3ff;
+            color: #5b21b6;
+        }
+        .dropdown-content {
+            display: none;
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -2px rgb(0 0 0 / 0.05);
+        }
+        .dropdown.open .dropdown-content {
+            display: block;
+        }
+        .loader {
+            border: 4px solid #e9d5ff;
+            border-top: 4px solid #7c3aed;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        #chart-tooltip {
+            position: absolute;
+            background-color: rgba(17, 24, 39, 0.85);
+            color: white;
+            padding: 6px 10px;
+            border-radius: 8px;
+            font-size: 0.875rem;
+            font-weight: 500;
+            pointer-events: none;
+            transform: translate(-50%, -120%);
+            transition: opacity 0.1s ease-in-out;
+            opacity: 0;
+            display: none;
+        }
+        .control-btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            height: 42px;
+            padding-left: 1rem;
+            padding-right: 1rem;
+            border: 1px solid #d1d5db;
+            border-radius: 9999px;
+            background-color: white;
+            font-weight: 500;
+            font-size: 0.875rem;
+            transition: all 0.2s ease-in-out;
+        }
+        .control-btn:hover {
+            border-color: #a78bfa;
+            background-color: #f5f3ff;
+            color: #7c3aed;
+        }
+        .litepicker {
+            border-radius: 0.75rem !important;
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -2px rgb(0 0 0 / 0.05) !important;
+            border: 1px solid #e9d5ff !important;
+        }
+        .litepicker .container__months .month-item-header, .litepicker .container__months .month-item {
+             box-shadow: none !important;
+        }
+        .litepicker .month-item .day-item.is-today {
+            color: #7c3aed !important;
+            font-weight: bold;
+        }
+        .litepicker .month-item .day-item.is-selected {
+            background-color: #7c3aed !important;
+            color: white !important;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+
+    <div class="card bg-white rounded-xl p-5 sm:p-6 md:p-8 w-full max-w-6xl mx-auto">
+        <div class="flex flex-wrap items-center justify-between gap-4 mb-6">
+            <div class="flex flex-wrap items-center gap-2">
+                <div class="flex items-center bg-gray-100 rounded-full p-0.5">
+                    <button id="prev-btn" class="p-2.5 text-gray-600 hover:text-violet-600 rounded-full hover:bg-violet-100 transition-colors">
+                        <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>
+                    </button>
+                    <button id="next-btn" class="p-2.5 text-gray-600 hover:text-violet-600 rounded-full hover:bg-violet-100 transition-colors">
+                        <svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" /></svg>
+                    </button>
+                </div>
+                <button id="current-date-display" class="control-btn w-44">Laden...</button>
+                <button id="today-btn" class="control-btn">Vandaag</button>
+            </div>
+
+            <div class="flex flex-wrap items-center gap-2">
+                <div class="relative dropdown" id="interval-dropdown">
+                    <button class="dropdown-toggle control-btn w-32">
+                        <span id="interval-label" class="flex-grow text-left">Dag</span>
+                        <svg class="h-5 w-5 text-gray-500 ml-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                    </button>
+                    <div class="dropdown-content absolute mt-2 w-32 bg-white rounded-lg border z-20">
+                        <a href="#" class="block px-4 py-2 text-gray-700 hover:bg-violet-50" data-interval="HOUR" data-label="Dag">Dag</a>
+                        <a href="#" class="block px-4 py-2 text-gray-700 hover:bg-violet-50" data-interval="DAY" data-label="Maand">Maand</a>
+                        <a href="#" class="block px-4 py-2 text-gray-700 hover:bg-violet-50" data-interval="MONTH" data-label="Jaar">Jaar</a>
+                    </div>
+                </div>
+                <div class="relative dropdown" id="price-type-dropdown">
+                    <button class="dropdown-toggle control-btn w-40">
+                        <span id="price-type-label" class="flex-grow text-left">All-in prijs</span>
+                        <svg class="h-5 w-5 text-gray-500 ml-2" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.293 7.293a1 1 0 011.414 0L10 10.586l3.293-3.293a1 1 0 111.414 1.414l-4 4a1 1 0 01-1.414 0l-4-4a1 1 0 010-1.414z" clip-rule="evenodd" /></svg>
+                    </button>
+                    <div class="dropdown-content absolute right-0 mt-2 w-40 bg-white rounded-lg border z-20">
+                        <a href="#" class="block px-4 py-2 text-gray-700 hover:bg-violet-50" data-price="allInPrijs" data-label="All-in prijs">All-in prijs</a>
+                        <a href="#" class="block px-4 py-2 text-gray-700 hover:bg-violet-50" data-price="marktprijs" data-label="Kale marktprijs">Kale marktprijs</a>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="hidden md:flex items-center justify-center gap-8 text-sm text-center mb-6">
+             <div>
+                <span class="text-gray-500">Laagst</span>
+                <p id="stat-low" class="font-bold text-lg text-cyan-500">-</p>
+            </div>
+            <div>
+                <span class="text-gray-500">Gemiddeld</span>
+                <p id="stat-avg" class="font-bold text-lg text-gray-800">-</p>
+            </div>
+            <div>
+                <span class="text-gray-500">Hoogst</span>
+                <p id="stat-high" class="font-bold text-lg text-pink-500">-</p>
+            </div>
+        </div>
+
+        <div id="info-box" class="bg-violet-50 rounded-lg p-4 mb-4 min-h-[80px] flex flex-col justify-center border border-violet-200">
+            <p class="text-sm text-violet-700" id="info-time">-</p>
+            <p class="text-2xl font-bold text-violet-900" id="info-price">-</p>
+        </div>
+
+        <div id="chart-container" class="relative h-80">
+            <canvas id="energyChart"></canvas>
+            <div id="chart-tooltip"></div>
+            <div id="loading-overlay" class="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center rounded-lg hidden">
+                <div class="loader"></div>
+            </div>
+             <div id="error-overlay" class="absolute inset-0 bg-white bg-opacity-75 flex items-center justify-center rounded-lg hidden">
+                <p class="text-red-500 font-semibold text-center">Kon geen gegevens laden.<br>Probeer een andere periode.</p>
+            </div>
+        </div>
+
+        <div class="flex justify-center mt-6">
+            <div class="flex space-x-1 bg-violet-100 p-1 rounded-full">
+                <button id="btn-stroom" class="btn-toggle active px-8 py-2 rounded-full font-semibold transition-colors duration-300 flex items-center space-x-2">
+                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M11.3 1.046A1 1 0 0112 2v5h4a1 1 0 01.82 1.573l-7 10A1 1 0 018 18v-5H4a1 1 0 01-.82-1.573l7-10a1 1 0 011.12-.38z" clip-rule="evenodd" /></svg>
+                    <span>Stroom</span>
+                </button>
+                <button id="btn-gas" class="btn-toggle inactive px-8 py-2 rounded-full font-semibold transition-colors duration-300">
+                    Gas
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const state = {
+            chartInstance: null,
+            datepickerInstance: null,
+            currentData: [],
+            currentDate: new Date(),
+            energyType: 'electricity',
+            interval: 'HOUR',
+            priceType: 'allInPrijs',
+        };
+
+        const DOMElements = {
+            chartCanvas: document.getElementById('energyChart'),
+            chartTooltip: document.getElementById('chart-tooltip'),
+            dateDisplay: document.getElementById('current-date-display'),
+            prevBtn: document.getElementById('prev-btn'),
+            nextBtn: document.getElementById('next-btn'),
+            todayBtn: document.getElementById('today-btn'),
+            infoTime: document.getElementById('info-time'),
+            infoPrice: document.getElementById('info-price'),
+            statLow: document.getElementById('stat-low'),
+            statAvg: document.getElementById('stat-avg'),
+            statHigh: document.getElementById('stat-high'),
+            btnStroom: document.getElementById('btn-stroom'),
+            btnGas: document.getElementById('btn-gas'),
+            loadingOverlay: document.getElementById('loading-overlay'),
+            errorOverlay: document.getElementById('error-overlay'),
+            intervalDropdown: document.getElementById('interval-dropdown'),
+            priceTypeDropdown: document.getElementById('price-type-dropdown'),
+            intervalLabel: document.getElementById('interval-label'),
+            priceTypeLabel: document.getElementById('price-type-label'),
+        };
+
+        const setLoading = (isLoading) => {
+            DOMElements.loadingOverlay.classList.toggle('hidden', !isLoading);
+            if (isLoading) DOMElements.errorOverlay.classList.add('hidden');
+            [DOMElements.prevBtn, DOMElements.nextBtn, DOMElements.todayBtn].forEach(btn => btn.disabled = isLoading);
+        };
+
+        const showError = () => {
+            setLoading(false);
+            DOMElements.errorOverlay.classList.remove('hidden');
+            if (state.chartInstance) state.chartInstance.clear();
+            resetInfo();
+        };
+
+        const resetInfo = () => {
+            DOMElements.infoTime.textContent = 'Geen gegevens beschikbaar';
+            DOMElements.infoPrice.textContent = '-';
+            DOMElements.statLow.textContent = '-';
+            DOMElements.statAvg.textContent = '-';
+            DOMElements.statHigh.textContent = '-';
+        };
+
+        const updateDateDisplay = () => {
+            let options = {};
+            switch (state.interval) {
+                case 'HOUR': options = { day: 'numeric', month: 'long', year: 'numeric' }; break;
+                case 'DAY': options = { month: 'long', year: 'numeric' }; break;
+                case 'MONTH': options = { year: 'numeric' }; break;
+            }
+            const dateString = state.currentDate.toLocaleDateString('nl-NL', options);
+            DOMElements.dateDisplay.textContent = dateString;
+            if (state.datepickerInstance) {
+                state.datepickerInstance.setDate(state.currentDate);
+            }
+        };
+
+        const fetchAndRenderData = async () => {
+            setLoading(true);
+            updateDateDisplay();
+            let { startDate, endDate } = getStartEndDates();
+            const url = `/api/energy?type=${state.energyType}&startDate=${startDate.toISOString()}&endDate=${endDate.toISOString()}&interval=${state.interval}`;
+            try {
+                const response = await fetch(url);
+                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
+                const result = await response.json();
+                if (result && result.data && result.data.length > 0) {
+                    state.currentData = result.data.sort((a, b) => new Date(a.date) - new Date(b.date));
+                    renderChart();
+                    updateStats();
+                    updateInfoBox(0);
+                } else {
+                    state.currentData = [];
+                    if (state.chartInstance) state.chartInstance.clear();
+                    resetInfo();
+                }
+                 DOMElements.errorOverlay.classList.add('hidden');
+            } catch (error) {
+                console.error("Failed to fetch energy data from backend:", error);
+                showError();
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        const getStartEndDates = () => {
+            let startDate = new Date(state.currentDate);
+            let endDate = new Date(state.currentDate);
+            switch (state.interval) {
+                case 'HOUR':
+                    startDate.setUTCHours(0, 0, 0, 0);
+                    // --- FIX: Set milliseconds to 0 to match cache warmer ---
+                    endDate.setUTCHours(23, 59, 59, 0);
+                    break;
+                case 'DAY':
+                    startDate.setUTCDate(1);
+                    startDate.setUTCHours(0, 0, 0, 0);
+                    endDate = new Date(startDate.getUTCFullYear(), startDate.getUTCMonth() + 1, 0);
+                    endDate.setUTCHours(23, 59, 59, 0);
+                    break;
+                case 'MONTH':
+                    startDate.setUTCMonth(0, 1);
+                    startDate.setUTCHours(0, 0, 0, 0);
+                    endDate = new Date(startDate.getUTCFullYear(), 11, 31);
+                    endDate.setUTCHours(23, 59, 59, 0);
+                    break;
+            }
+            return { startDate, endDate };
+        }
+
+        const renderChart = () => {
+            if (state.chartInstance) state.chartInstance.destroy();
+            if (state.currentData.length === 0) return;
+            const prices = state.currentData.map(d => d.values[state.priceType] || 0);
+            const lowestPrice = Math.min(...prices.filter(p => p > 0));
+            const backgroundColors = prices.map(p => p === lowestPrice ? '#22d3ee' : '#a78bfa');
+            const hoverBackgroundColors = prices.map(p => p === lowestPrice ? '#67e8f9' : '#c4b5fd');
+            const chartData = {
+                labels: state.currentData.map(d => d.date),
+                datasets: [{
+                    data: prices,
+                    backgroundColor: backgroundColors,
+                    hoverBackgroundColor: hoverBackgroundColors,
+                    borderColor: 'rgba(0,0,0,0)',
+                    hoverBorderColor: '#8b5cf6',
+                    borderWidth: 0,
+                    hoverBorderWidth: 2,
+                    borderRadius: 4,
+                    borderSkipped: false,
+                    barPercentage: 0.8,
+                    categoryPercentage: 0.9,
+                }]
+            };
+            state.chartInstance = new Chart(DOMElements.chartCanvas, {
+                type: 'bar',
+                data: chartData,
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { display: false }, tooltip: { enabled: false } },
+                    onHover: (event, chartElement) => {
+                        const tooltip = DOMElements.chartTooltip;
+                        if (chartElement.length > 0) {
+                            const index = chartElement[0].index;
+                            const dataPoint = state.currentData[index];
+                            const price = dataPoint.values[state.priceType] || 0;
+                            tooltip.innerHTML = `${price.toFixed(1)} ct`;
+                            tooltip.style.display = 'block';
+                            tooltip.style.opacity = 1;
+                            const { x, y } = chartElement[0].element.getCenterPoint();
+                            tooltip.style.left = `${x}px`;
+                            tooltip.style.top = `${y}px`;
+                        } else {
+                            tooltip.style.opacity = 0;
+                            tooltip.style.display = 'none';
+                        }
+                    },
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: {
+                                unit: state.interval === 'HOUR' ? 'hour' : (state.interval === 'DAY' ? 'day' : 'month'),
+                                tooltipFormat: 'dd-MM-yyyy HH:mm',
+                                displayFormats: { hour: 'HH', day: 'd', month: 'MMM' }
+                            },
+                            grid: { display: false },
+                            ticks: { color: '#6b7280' }
+                        },
+                        y: {
+                            beginAtZero: true,
+                            ticks: { callback: (value) => `${value.toFixed(0)} ct`, color: '#6b7280' },
+                            grid: { drawBorder: false, color: '#e5e7eb' }
+                        }
+                    },
+                    onClick: (event, elements) => {
+                        if (elements.length > 0) updateInfoBox(elements[0].index);
+                    }
+                }
+            });
+        };
+
+        const updateInfoBox = (index) => {
+            if (!state.currentData[index]) return;
+            const item = state.currentData[index];
+            const date = new Date(item.date);
+            const price = item.values[state.priceType] || 0;
+            const unit = state.energyType === 'gas' ? 'm³' : 'kWh';
+            let timeLabel = '';
+            switch (state.interval) {
+                case 'HOUR': timeLabel = `${date.getUTCHours().toString().padStart(2, '0')}:00 - ${(date.getUTCHours() + 1).toString().padStart(2, '0')}:00`; break;
+                case 'DAY': timeLabel = date.toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' }); break;
+                case 'MONTH': timeLabel = date.toLocaleDateString('nl-NL', { month: 'long', year: 'numeric' }); break;
+            }
+            DOMElements.infoTime.textContent = timeLabel;
+            DOMElements.infoPrice.innerHTML = `${price.toFixed(0)} ct <span class="text-lg font-normal text-gray-500">/ ${unit}</span>`;
+        };
+
+        const updateStats = () => {
+            if (state.currentData.length === 0) return;
+            const prices = state.currentData.map(d => d.values[state.priceType] || 0);
+            DOMElements.statLow.textContent = `${Math.min(...prices).toFixed(0)}ct`;
+            DOMElements.statAvg.textContent = `${(prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(0)}ct`;
+            DOMElements.statHigh.textContent = `${Math.max(...prices).toFixed(0)}ct`;
+        };
+
+        const setupEventListeners = () => {
+            DOMElements.prevBtn.addEventListener('click', () => {
+                const d = state.currentDate;
+                if (state.interval === 'HOUR') d.setDate(d.getDate() - 1);
+                else if (state.interval === 'DAY') d.setMonth(d.getMonth() - 1);
+                else if (state.interval === 'MONTH') d.setFullYear(d.getFullYear() - 1);
+                fetchAndRenderData();
+            });
+
+            DOMElements.nextBtn.addEventListener('click', () => {
+                const d = state.currentDate;
+                if (state.interval === 'HOUR') d.setDate(d.getDate() + 1);
+                else if (state.interval === 'DAY') d.setMonth(d.getMonth() + 1);
+                else if (state.interval === 'MONTH') d.setFullYear(d.getFullYear() + 1);
+                fetchAndRenderData();
+            });
+
+            DOMElements.todayBtn.addEventListener('click', () => {
+                const today = new Date();
+                if (today.toDateString() === state.currentDate.toDateString()) return;
+                state.currentDate = today;
+                fetchAndRenderData();
+            });
+
+            DOMElements.btnStroom.addEventListener('click', () => {
+                if (state.energyType === 'electricity') return;
+                state.energyType = 'electricity';
+                DOMElements.btnStroom.classList.replace('inactive', 'active');
+                DOMElements.btnGas.classList.replace('active', 'inactive');
+                fetchAndRenderData();
+            });
+
+            DOMElements.btnGas.addEventListener('click', () => {
+                if (state.energyType === 'gas') return;
+                state.energyType = 'gas';
+                DOMElements.btnGas.classList.replace('inactive', 'active');
+                DOMElements.btnStroom.classList.replace('active', 'inactive');
+                fetchAndRenderData();
+            });
+
+            [DOMElements.intervalDropdown, DOMElements.priceTypeDropdown].forEach(dd => {
+                const toggle = dd.querySelector('.dropdown-toggle');
+                toggle.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    dd.classList.toggle('open')
+                });
+            });
+
+            DOMElements.intervalDropdown.addEventListener('click', (e) => {
+                if (e.target.tagName === 'A') {
+                    e.preventDefault();
+                    state.interval = e.target.dataset.interval;
+                    DOMElements.intervalLabel.textContent = e.target.dataset.label;
+                    fetchAndRenderData();
+                }
+            });
+
+            DOMElements.priceTypeDropdown.addEventListener('click', (e) => {
+                if (e.target.tagName === 'A') {
+                    e.preventDefault();
+                    state.priceType = e.target.dataset.price;
+                    DOMElements.priceTypeLabel.textContent = e.target.dataset.label;
+                    fetchAndRenderData();
+                }
+            });
+
+            window.addEventListener('click', (e) => {
+                if (!DOMElements.intervalDropdown.contains(e.target)) DOMElements.intervalDropdown.classList.remove('open');
+                if (!DOMElements.priceTypeDropdown.contains(e.target)) DOMElements.priceTypeDropdown.classList.remove('open');
+            });
+
+            state.datepickerInstance = new Litepicker({
+                element: DOMElements.dateDisplay,
+                lang: 'nl-NL',
+                singleMode: true,
+                buttonText: {
+                    previousMonth: `<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M12.707 5.293a1 1 0 010 1.414L9.414 10l3.293 3.293a1 1 0 01-1.414 1.414l-4-4a1 1 0 010-1.414l4-4a1 1 0 011.414 0z" clip-rule="evenodd" /></svg>`,
+                    nextMonth: `<svg class="h-5 w-5" viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M7.293 14.707a1 1 0 010-1.414L10.586 10 7.293 6.707a1 1 0 011.414-1.414l4 4a1 1 0 010 1.414l-4 4a1 1 0 01-1.414 0z" clip-rule="evenodd" /></svg>`,
+                },
+                setup: (picker) => {
+                    picker.on('selected', (date) => {
+                        const selectedDate = date.toJSDate();
+                        if (selectedDate.toDateString() !== state.currentDate.toDateString()) {
+                            state.currentDate = selectedDate;
+                            fetchAndRenderData();
+                        }
+                    });
+                }
+            });
+        };
+
+        setupEventListeners();
+        fetchAndRenderData();
+    });
+    </script>
+</body>
+</html>
