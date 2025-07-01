@@ -238,7 +238,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "energy_chart"
+name = "energy-chart"
 version = "0.1.0"
 dependencies = [
  "axum",
