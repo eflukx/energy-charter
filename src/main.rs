@@ -6,11 +6,12 @@ use axum::{
     Router,
 };
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono_tz::Tz;
 use futures::stream::StreamExt;
 use moka::future::Cache;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, str::FromStr};
 use tokio::fs;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -60,26 +61,28 @@ struct EnergyParams {
 }
 
 impl EnergyParams {
+    /// Creëert een unieke string voor gebruik als cache key met seconden-precisie.
     fn get_cache_key(&self) -> String {
         let interval = self.interval.unwrap_or(Interval::Hour);
         format!(
             "{}:{}:{}:{}",
             self.energy_type,
-            self.start_date.to_rfc3339_opts(SecondsFormat::Millis, true),
-            self.end_date.to_rfc3339_opts(SecondsFormat::Millis, true),
+            self.start_date.to_rfc3339_opts(SecondsFormat::Secs, true),
+            self.end_date.to_rfc3339_opts(SecondsFormat::Secs, true),
             interval
         )
     }
 
+    /// Bouwt de volledige URL voor de externe ANWB API met seconden-precisie.
     fn build_api_url(&self) -> String {
         let interval = self.interval.unwrap_or(Interval::Hour);
         format!(
-"https://api.anwb.nl/energy/energy-services/v1/tarieven/{}?startDate={}&endDate={}&interval={}",
-self.energy_type,
-self.start_date.to_rfc3339_opts(SecondsFormat::Millis, true),
-self.end_date.to_rfc3339_opts(SecondsFormat::Millis, true),
-interval
-)
+            "https://api.anwb.nl/energy/energy-services/v1/tarieven/{}?startDate={}&endDate={}&interval={}",
+            self.energy_type,
+            self.start_date.to_rfc3339_opts(SecondsFormat::Secs, true),
+            self.end_date.to_rfc3339_opts(SecondsFormat::Secs, true),
+            interval
+        )
     }
 }
 
@@ -108,29 +111,43 @@ struct AppState {
 #[derive(Debug)]
 struct AppConfig {
     listen_addr: String,
-    cache_ttl_seconds: u64,
     static_file_path: String,
     cache_warmup_concurrency: usize,
+    cache_capacity: u64,
+    cache_warmup_days: i64,
+    timezone: Tz,
 }
 
 fn load_config() -> AppConfig {
-    let listen_addr = std::env::var("LISTEN_ADDR").unwrap_or_else(|_| "127.0.0.1:3000".to_string());
-    let cache_ttl_seconds: u64 = std::env::var("CACHE_TTL_SECONDS")
-        .unwrap_or_else(|_| "3600".to_string())
-        .parse()
-        .expect("CACHE_TTL_SECONDS moet een geldig getal zijn.");
-    let static_file_path =
-        std::env::var("STATIC_FILE_PATH").unwrap_or_else(|_| "index.html".to_string());
+    let listen_addr = std::env::var("LISTEN_ADDR").unwrap_or("127.0.0.1:3000".to_string());
+
+    let static_file_path = std::env::var("STATIC_FILE_PATH").unwrap_or("index.html".to_string());
+
     let cache_warmup_concurrency: usize = std::env::var("CACHE_WARMUP_CONCURRENCY")
-        .unwrap_or_else(|_| "10".to_string())
+        .unwrap_or("10".to_string())
         .parse()
         .expect("CACHE_WARMUP_CONCURRENCY moet een geldig getal zijn.");
 
+    let cache_capacity: u64 = std::env::var("CACHE_CAPACITY")
+        .unwrap_or("10000".to_string())
+        .parse()
+        .expect("CACHE_CAPACITY moet een geldig getal zijn.");
+
+    let cache_warmup_days: i64 = std::env::var("CACHE_WARMUP_DAYS")
+        .unwrap_or("7".to_string())
+        .parse()
+        .expect("CACHE_WARMUP_DAYS moet een geldig getal zijn.");
+
+    let timezone_str = std::env::var("TIMEZONE").unwrap_or("Europe/Amsterdam".to_string());
+    let timezone = Tz::from_str(&timezone_str).expect("Ongeldige TIMEZONE environment variabele.");
+
     AppConfig {
         listen_addr,
-        cache_ttl_seconds,
         static_file_path,
         cache_warmup_concurrency,
+        cache_capacity,
+        cache_warmup_days,
+        timezone,
     }
 }
 
@@ -147,10 +164,7 @@ async fn main() {
     let config = load_config();
     tracing::info!("Configuratie geladen: {:?}", config);
 
-    let cache = Cache::builder()
-        .max_capacity(1_000)
-        .time_to_live(std::time::Duration::from_secs(config.cache_ttl_seconds))
-        .build();
+    let cache = Cache::builder().max_capacity(config.cache_capacity).build();
 
     let app_state = AppState {
         http_client: Client::new(),
@@ -161,6 +175,8 @@ async fn main() {
     tokio::spawn(warm_up_cache(
         app_state.clone(),
         config.cache_warmup_concurrency,
+        config.cache_warmup_days,
+        config.timezone,
     ));
 
     let app = Router::new()
@@ -255,16 +271,20 @@ async fn fetch_and_cache(
     }
 }
 
-async fn warm_up_cache(state: AppState, concurrency: usize) {
+async fn warm_up_cache(state: AppState, concurrency: usize, warmup_days: i64, timezone: Tz) {
     tracing::info!(
-        "Starten met het opwarmen van de cache (concurrency: {})...",
-        concurrency
+        "Starten met het opwarmen van de cache voor {} dagen (concurrency: {}, timezone: {})...",
+        warmup_days,
+        concurrency,
+        timezone
     );
-    let today = Utc::now();
+
+    // start tomorrow, to include day ahead prices when available
+    let day_ahead = Utc::now().with_timezone(&timezone).date_naive() + Duration::days(1);
 
     let mut tasks = Vec::new();
-    for i in 0..7 {
-        let target_day = today - Duration::days(i);
+    for i in 0..warmup_days {
+        let target_day = day_ahead - Duration::days(i);
         tasks.push((target_day, EnergyType::Electricity));
         tasks.push((target_day, EnergyType::Gas));
     }
@@ -273,21 +293,18 @@ async fn warm_up_cache(state: AppState, concurrency: usize) {
         .for_each_concurrent(concurrency, |(target_day, energy_type)| {
             let state = state.clone();
             async move {
+                // Bepaal de start en eindtijd van de dag in de lokale timezone, en converteer dan naar UTC.
                 let start_date = target_day
-                    .date_naive()
                     .and_hms_opt(0, 0, 0)
                     .unwrap()
-                    .and_utc();
-                let end_date = target_day
-                    .date_naive()
-                    .and_hms_opt(23, 59, 59)
+                    .and_local_timezone(timezone)
                     .unwrap()
-                    .and_utc();
+                    .to_utc();
 
                 let params = EnergyParams {
                     energy_type,
                     start_date,
-                    end_date,
+                    end_date: start_date + Duration::days(1),
                     interval: Some(Interval::Hour),
                 };
 

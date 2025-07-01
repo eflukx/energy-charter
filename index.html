@@ -202,9 +202,11 @@
         </div>
 
         <div id="info-box"
-            class="bg-violet-50 rounded-lg p-4 mb-4 min-h-[80px] flex flex-col justify-center border border-violet-200">
+            class="bg-violet-50 rounded-lg p-4 mb-4 min-h-[90px] flex flex-col justify-center border border-violet-200">
             <p class="text-sm text-violet-700" id="info-time">-</p>
-            <p class="text-2xl font-bold text-violet-900" id="info-price">-</p>
+            <div id="info-price-container">
+                <p class="text-2xl font-bold text-violet-900" id="info-price">-</p>
+            </div>
         </div>
 
         <div id="chart-container" class="relative h-80">
@@ -260,7 +262,7 @@
                 nextBtn: document.getElementById('next-btn'),
                 todayBtn: document.getElementById('today-btn'),
                 infoTime: document.getElementById('info-time'),
-                infoPrice: document.getElementById('info-price'),
+                infoPriceContainer: document.getElementById('info-price-container'),
                 statLow: document.getElementById('stat-low'),
                 statAvg: document.getElementById('stat-avg'),
                 statHigh: document.getElementById('stat-high'),
@@ -272,6 +274,12 @@
                 priceTypeDropdown: document.getElementById('price-type-dropdown'),
                 intervalLabel: document.getElementById('interval-label'),
                 priceTypeLabel: document.getElementById('price-type-label'),
+            };
+
+            const formatEuro = (cents) => {
+                if (typeof cents !== 'number') return '-';
+                const euros = cents / 100;
+                return `€ ${euros.toFixed(2).replace('.', ',')}`;
             };
 
             const setLoading = (isLoading) => {
@@ -289,7 +297,7 @@
 
             const resetInfo = () => {
                 DOMElements.infoTime.textContent = 'Geen gegevens beschikbaar';
-                DOMElements.infoPrice.textContent = '-';
+                DOMElements.infoPriceContainer.innerHTML = `<p class="text-2xl font-bold text-violet-900">-</p>`;
                 DOMElements.statLow.textContent = '-';
                 DOMElements.statAvg.textContent = '-';
                 DOMElements.statHigh.textContent = '-';
@@ -339,12 +347,12 @@
 
             const getStartEndDates = () => {
                 let startDate = new Date(state.currentDate);
-                let endDate = new Date(state.currentDate);
+                let endDate;
                 switch (state.interval) {
                     case 'HOUR':
-                        startDate.setUTCHours(0, 0, 0, 0);
-                        // --- FIX: Set milliseconds to 0 to match cache warmer ---
-                        endDate.setUTCHours(23, 59, 59, 0);
+                        startDate.setHours(0, 0, 0, 0);
+                        endDate = new Date(startDate);
+                        endDate.setDate(endDate.getDate() + 1);
                         break;
                     case 'DAY':
                         startDate.setUTCDate(1);
@@ -365,10 +373,23 @@
             const renderChart = () => {
                 if (state.chartInstance) state.chartInstance.destroy();
                 if (state.currentData.length === 0) return;
+
+                const isToday = new Date().toDateString() === state.currentDate.toDateString();
+                const currentHour = new Date().getHours();
+
                 const prices = state.currentData.map(d => d.values[state.priceType] || 0);
                 const lowestPrice = Math.min(...prices.filter(p => p > 0));
-                const backgroundColors = prices.map(p => p === lowestPrice ? '#22d3ee' : '#a78bfa');
-                const hoverBackgroundColors = prices.map(p => p === lowestPrice ? '#67e8f9' : '#c4b5fd');
+
+                const backgroundColors = state.currentData.map((d, i) => {
+                    const date = new Date(d.date);
+                    if (isToday && state.interval === 'HOUR' && date.getHours() === currentHour) {
+                        return '#f472b6'; // Pink for current hour
+                    }
+                    return prices[i] === lowestPrice ? '#22d3ee' : '#a78bfa';
+                });
+
+                const hoverBackgroundColors = backgroundColors.map(color => color + 'E6'); // Add some transparency on hover
+
                 const chartData = {
                     labels: state.currentData.map(d => d.date),
                     datasets: [{
@@ -398,7 +419,7 @@
                                 const index = chartElement[0].index;
                                 const dataPoint = state.currentData[index];
                                 const price = dataPoint.values[state.priceType] || 0;
-                                tooltip.innerHTML = `${price.toFixed(1)} ct`;
+                                tooltip.innerHTML = formatEuro(price);
                                 tooltip.style.display = 'block';
                                 tooltip.style.opacity = 1;
                                 const { x, y } = chartElement[0].element.getCenterPoint();
@@ -422,7 +443,7 @@
                             },
                             y: {
                                 beginAtZero: true,
-                                ticks: { callback: (value) => `${value.toFixed(0)} ct`, color: '#6b7280' },
+                                ticks: { callback: (value) => formatEuro(value), color: '#6b7280' },
                                 grid: { drawBorder: false, color: '#e5e7eb' }
                             }
                         },
@@ -437,24 +458,41 @@
                 if (!state.currentData[index]) return;
                 const item = state.currentData[index];
                 const date = new Date(item.date);
-                const price = item.values[state.priceType] || 0;
                 const unit = state.energyType === 'gas' ? 'm³' : 'kWh';
                 let timeLabel = '';
                 switch (state.interval) {
-                    case 'HOUR': timeLabel = `${date.getUTCHours().toString().padStart(2, '0')}:00 - ${(date.getUTCHours() + 1).toString().padStart(2, '0')}:00`; break;
+                    case 'HOUR': timeLabel = `${date.getHours().toString().padStart(2, '0')}:00 - ${(date.getHours() + 1).toString().padStart(2, '0')}:00`; break;
                     case 'DAY': timeLabel = date.toLocaleDateString('nl-NL', { weekday: 'long', day: 'numeric', month: 'long' }); break;
                     case 'MONTH': timeLabel = date.toLocaleDateString('nl-NL', { month: 'long', year: 'numeric' }); break;
                 }
                 DOMElements.infoTime.textContent = timeLabel;
-                DOMElements.infoPrice.innerHTML = `${price.toFixed(0)} ct <span class="text-lg font-normal text-gray-500">/ ${unit}</span>`;
+
+                // --- UPDATE: Show both prices in the info box ---
+                const allInPrice = item.values.allInPrijs || 0;
+                const marktPrijs = item.values.marktprijs || 0;
+                DOMElements.infoPriceContainer.innerHTML = `
+                <div class="flex items-end justify-between">
+                     <div class="flex items-baseline gap-x-4 gap-y-1 flex-wrap">
+                        <div>
+                            <p class="text-xs font-medium text-violet-600">All-in prijs</p>
+                            <p class="text-2xl font-bold text-violet-900">${formatEuro(allInPrice)}</p>
+                        </div>
+                        <div>
+                            <p class="text-xs font-medium text-violet-600">Kale marktprijs</p>
+                            <p class="text-xl font-semibold text-violet-800">${formatEuro(marktPrijs)}</p>
+                        </div>
+                    </div>
+                    <span class="text-lg font-normal text-gray-500 self-end">/ ${unit}</span>
+                </div>
+            `;
             };
 
             const updateStats = () => {
                 if (state.currentData.length === 0) return;
                 const prices = state.currentData.map(d => d.values[state.priceType] || 0);
-                DOMElements.statLow.textContent = `${Math.min(...prices).toFixed(0)}ct`;
-                DOMElements.statAvg.textContent = `${(prices.reduce((a, b) => a + b, 0) / prices.length).toFixed(0)}ct`;
-                DOMElements.statHigh.textContent = `${Math.max(...prices).toFixed(0)}ct`;
+                DOMElements.statLow.textContent = formatEuro(Math.min(...prices));
+                DOMElements.statAvg.textContent = formatEuro(prices.reduce((a, b) => a + b, 0) / prices.length);
+                DOMElements.statHigh.textContent = formatEuro(Math.max(...prices));
             };
 
             const setupEventListeners = () => {
